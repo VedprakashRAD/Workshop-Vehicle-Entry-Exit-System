@@ -1,0 +1,99 @@
+/* Main Styles */
+body {
+    background-color: #f5f5f5;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.container-fluid {
+    max-width: 1800px;
+}
+
+header {
+    margin-bottom: 20px;
+}
+
+/* Card Styles */
+.card {
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    margin-bottom: 20px;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.card-header {
+    font-weight: bold;
+}
+
+/* Video Feed */
+.card-body img {
+    display: block;
+    height: auto;
+}
+
+/* License Plate Display */
+.plate-display {
+    background: #fff;
+    border-radius: 5px;
+    padding: 8px 15px;
+    margin-top: 10px;
+    display: inline-block;
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: #000;
+    border: 2px solid #000;
+}
+
+/* Recently Detected Plates */
+#recent-plates {
+    margin-top: 10px;
+}
+
+#recent-plates .list-group-item {
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+#recent-plates .list-group-item:hover {
+    background-color: #f0f0f0;
+}
+
+#recent-plates .list-group-item.active {
+    background-color: #007bff;
+    color: white;
+}
+
+/* Vehicle Details */
+.detail-row {
+    margin-bottom: 10px;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 10px;
+}
+
+.detail-label {
+    font-weight: bold;
+    color: #555;
+}
+
+.detail-value {
+    font-size: 1.1rem;
+}
+
+/* Entry/Exit Log */
+#entry-exit-log .status-entry {
+    color: #28a745;
+}
+
+#entry-exit-log .status-exit {
+    color: #dc3545;
+}
+
+/* Responsive Adjustments */
+@media (max-width: 768px) {
+    .row {
+        flex-direction: column;
+    }
+    
+    .col-md-6 {
+        width: 100%;
+    }
+} 
