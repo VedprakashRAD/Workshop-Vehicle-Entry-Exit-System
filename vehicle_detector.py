@@ -17,14 +17,18 @@ class VehicleDetector:
         # Load license plate detection model
         license_plate_model_path = os.path.join(model_dir, 'license_plate_detector.pt')
         
-        # Download license plate model if it doesn't exist (placeholder for actual fine-tuned model)
-        if not os.path.exists(license_plate_model_path):
-            # In real implementation, download or copy the fine-tuned model
-            # For this example, we'll use the same general model
-            self.license_plate_model = self.vehicle_model
-            print("Using general model for license plate detection")
+        # Use the specialized license plate detector model
+        if os.path.exists(license_plate_model_path):
+            try:
+                self.license_plate_model = YOLO(license_plate_model_path)
+                print("Using specialized license plate detector model")
+            except Exception as e:
+                print(f"Error loading license plate model: {e}")
+                self.license_plate_model = self.vehicle_model
+                print("Falling back to general model for license plate detection")
         else:
-            self.license_plate_model = YOLO(license_plate_model_path)
+            self.license_plate_model = self.vehicle_model
+            print("License plate model not found, using general model")
             
         # Vehicle classes of interest (from COCO dataset)
         self.vehicle_classes = {
@@ -43,34 +47,63 @@ class VehicleDetector:
         self.cleanup_interval = 30  # 30 seconds
     
     def detect_vehicles_and_plates(self, frame):
-        """Detect vehicles and license plates in a frame"""
+        """Detect vehicles and license plates in a frame, with focus on plates"""
         if frame is None:
             return [], []
         
         # Get frame dimensions
         height, width = frame.shape[:2]
         
-        # Detect vehicles
-        vehicle_results = self.vehicle_model(frame, conf=self.vehicle_conf)[0]
+        # Try different scales for better license plate detection
+        scales = [1.0, 1.5, 0.75]
         vehicle_detections = []
         
-        # Filter for vehicle classes
-        for box in vehicle_results.boxes:
-            cls = int(box.cls.item())
-            if cls in self.vehicle_classes:
-                x1, y1, x2, y2 = box.xyxy.cpu().numpy()[0]
-                confidence = box.conf.item()
-                vehicle_detections.append({
-                    'box': [x1, y1, x2, y2],
-                    'confidence': confidence,
-                    'class': self.vehicle_classes[cls]
-                })
+        for scale in scales:
+            if scale == 1.0:
+                scaled_frame = frame
+            else:
+                # Resize the frame for better detection at different scales
+                new_width = int(width * scale)
+                new_height = int(height * scale)
+                scaled_frame = cv2.resize(frame, (new_width, new_height))
+            
+            # Detect vehicles
+            try:
+                vehicle_results = self.vehicle_model(scaled_frame, conf=self.vehicle_conf)[0]
+                
+                # Filter for vehicle classes
+                for box in vehicle_results.boxes:
+                    cls = int(box.cls.item())
+                    if cls in self.vehicle_classes:
+                        x1, y1, x2, y2 = box.xyxy.cpu().numpy()[0]
+                        
+                        # Adjust coordinates back to original scale if needed
+                        if scale != 1.0:
+                            x1 = int(x1 / scale)
+                            y1 = int(y1 / scale)
+                            x2 = int(x2 / scale)
+                            y2 = int(y2 / scale)
+                        
+                        confidence = box.conf.item()
+                        vehicle_detections.append({
+                            'box': [x1, y1, x2, y2],
+                            'confidence': confidence,
+                            'class': self.vehicle_classes[cls]
+                        })
+            except Exception as e:
+                # Skip this scale if an error occurs
+                continue
         
         # Detect license plates - two approaches
         plate_detections = []
         
-        # Approach 1: Use general object detection
-        plate_results = self.vehicle_model(frame, conf=self.plate_conf)[0]
+        # Approach 1: Use specialized license plate detector
+        try:
+            plate_results = self.license_plate_model(frame, conf=self.plate_conf)[0]
+        except Exception as e:
+            print(f"Error using license plate model: {e}")
+            # Fallback to vehicle model
+            plate_results = self.vehicle_model(frame, conf=self.plate_conf)[0]
         
         # Approach 2: Use direct scanning of vehicle regions
         for vehicle in vehicle_detections:
@@ -206,40 +239,29 @@ class VehicleDetector:
                 del self.detected_plates[plate_id]
     
     def draw_detections(self, frame, vehicles, plates):
-        """Draw bounding boxes and labels on the frame"""
+        """Draw only license plates on the frame"""
         if frame is None:
             return frame
         
         # Create a copy of the frame to avoid modifying the original
         result = frame.copy()
         
-        # Draw vehicles
-        for vehicle in vehicles:
-            x1, y1, x2, y2 = map(int, vehicle['box'])
-            confidence = vehicle['confidence']
-            vehicle_class = vehicle['class']
-            
-            # Draw the bounding box
-            cv2.rectangle(result, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            
-            # Draw the label
-            label = f"{vehicle_class}: {confidence:.2f}"
-            cv2.putText(result, label, (x1, y1 - 10), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        
-        # Draw license plates
+        # Only draw license plates
         for plate in plates:
             x1, y1, x2, y2 = map(int, plate['box'])
             text = plate['text']
             confidence = plate['text_confidence']
             
-            # Draw the bounding box
-            cv2.rectangle(result, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            # Draw the bounding box with thicker lines
+            cv2.rectangle(result, (x1, y1), (x2, y2), (0, 0, 255), 3)
             
-            # Draw the label
-            label = f"{text}: {confidence:.2f}"
-            cv2.putText(result, label, (x1, y1 - 10), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+            # Create a filled background for the text
+            text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)[0]
+            cv2.rectangle(result, (x1, y1 - text_size[1] - 10), (x1 + text_size[0] + 10, y1), (0, 0, 255), -1)
+            
+            # Draw the license plate number in larger font
+            cv2.putText(result, text, (x1 + 5, y1 - 5), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
         
         return result
     

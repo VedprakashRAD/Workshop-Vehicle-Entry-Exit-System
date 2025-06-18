@@ -90,11 +90,15 @@ def process_frame(frame):
     global processing
     
     try:
-        # Detect vehicles and plates
+        # Detect license plates only
         vehicle_detections, plate_detections = detector.detect_vehicles_and_plates(frame)
         
-        # Draw the detections on the frame
-        processed_frame = detector.draw_detections(frame, vehicle_detections, plate_detections)
+        if plate_detections:
+            # Only draw the license plates
+            processed_frame = detector.draw_detections(frame, [], plate_detections)
+        else:
+            # Just show the original frame if no plates detected
+            processed_frame = frame
         
         # Update the current frame with the processed one
         with frame_lock:

@@ -1,6 +1,6 @@
 document.addEventListener('DOMContentLoaded', function() {
     // Cache DOM elements
-    const recentPlatesElement = document.getElementById('recent-plates');
+    const recentPlatesGridElement = document.getElementById('recent-plates-grid');
     const currentPlateElement = document.getElementById('current-plate');
     const vehicleDetailsElement = document.getElementById('vehicle-details');
     const entryExitLogElement = document.getElementById('entry-exit-log');
@@ -23,41 +23,42 @@ document.addEventListener('DOMContentLoaded', function() {
             .catch(error => console.error('Error fetching detected plates:', error));
     }
     
-    // Update the list of recently detected plates
+    // Update the grid of recently detected plates
     function updateRecentPlatesList() {
-        // Clear the current list
-        recentPlatesElement.innerHTML = '';
+        // Clear the current grid
+        recentPlatesGridElement.innerHTML = '';
         
-        // Add detected plates to the list
+        // Add detected plates to the grid
         detectedPlates.forEach(plate => {
-            const listItem = document.createElement('li');
-            listItem.className = 'list-group-item d-flex justify-content-between align-items-center';
-            if (selectedPlate === plate.plate_number) {
-                listItem.className += ' active';
-            }
+            const plateCard = document.createElement('div');
+            plateCard.className = 'col-md-4 mb-3';
             
-            listItem.innerHTML = `
-                <div>
-                    <strong>${plate.plate_number}</strong>
-                    <span class="badge bg-secondary ms-2">${plate.vehicle_type}</span>
+            // Create card style for each plate
+            plateCard.innerHTML = `
+                <div class="card plate-card ${selectedPlate === plate.plate_number ? 'border-primary' : ''}">
+                    <div class="card-body p-2 text-center">
+                        <h5 class="card-title">${plate.plate_number}</h5>
+                        <p class="card-text mb-1">Confidence: ${Math.round(plate.confidence * 100)}%</p>
+                        <button class="btn btn-sm btn-primary">View Details</button>
+                    </div>
                 </div>
-                <span class="badge bg-primary rounded-pill">${Math.round(plate.confidence * 100)}%</span>
             `;
             
             // Add click event to show vehicle details
-            listItem.addEventListener('click', () => {
+            const button = plateCard.querySelector('button');
+            button.addEventListener('click', () => {
                 selectPlate(plate.plate_number);
             });
             
-            recentPlatesElement.appendChild(listItem);
+            recentPlatesGridElement.appendChild(plateCard);
         });
         
         // If no plates detected
         if (detectedPlates.length === 0) {
-            const noPlatesItem = document.createElement('li');
-            noPlatesItem.className = 'list-group-item text-center text-muted';
-            noPlatesItem.textContent = 'No plates detected';
-            recentPlatesElement.appendChild(noPlatesItem);
+            const noPlatesDiv = document.createElement('div');
+            noPlatesDiv.className = 'col-12 text-center text-muted p-4';
+            noPlatesDiv.innerHTML = '<h5>No license plates detected</h5>';
+            recentPlatesGridElement.appendChild(noPlatesDiv);
         }
     }
     
@@ -184,7 +185,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 const logEntry = document.createElement('tr');
                 logEntry.innerHTML = `
                     <td>${plateNumber}</td>
-                    <td>${plate.vehicle_type}</td>
                     <td>${timeString}</td>
                     <td class="status-entry">Entry</td>
                 `;
@@ -222,7 +222,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 const logEntry = document.createElement('tr');
                 logEntry.innerHTML = `
                     <td>${plateNumber}</td>
-                    <td>${value.vehicle_type || 'Unknown'}</td>
                     <td>${timeString}</td>
                     <td class="status-exit">Exit</td>
                 `;
