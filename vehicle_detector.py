@@ -11,7 +11,8 @@ class VehicleDetector:
         # Create models directory if it doesn't exist
         os.makedirs(model_dir, exist_ok=True)
         
-        # Load vehicle detection model
+        # Load vehicle detection model - using a more efficient approach
+        print("Loading YOLOv8 model for vehicle-only detection...")
         self.vehicle_model = YOLO('yolov8n.pt')  # Using YOLOv8 nano model
         
         # Load license plate detection model
@@ -31,14 +32,14 @@ class VehicleDetector:
             print("License plate model not found, using general model")
             
         # Vehicle classes of interest (from COCO dataset)
+        # Focusing only on actual vehicles (removing person, boat, traffic light)
         self.vehicle_classes = {
-            2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck', 
-            8: 'boat', 9: 'traffic light', 0: 'person'
+            2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'
         }
         
-        # Confidence thresholds
-        self.vehicle_conf = 0.25  # Lower threshold to detect more vehicles
-        self.plate_conf = 0.15  # Lower threshold for license plates
+        # Confidence thresholds - increase vehicle confidence for faster detection
+        self.vehicle_conf = 0.35  # Higher threshold for more confident and faster detection
+        self.plate_conf = 0.25  # Increased threshold for license plates to reduce false positives
         
         # Track detected vehicles and plates
         self.detected_vehicles = {}
@@ -54,112 +55,119 @@ class VehicleDetector:
         # Get frame dimensions
         height, width = frame.shape[:2]
         
-        # Try different scales for better license plate detection
-        scales = [1.0, 1.5, 0.75]
+        # Only detect vehicles once with optimized settings
         vehicle_detections = []
         
-        for scale in scales:
-            if scale == 1.0:
-                scaled_frame = frame
-            else:
-                # Resize the frame for better detection at different scales
-                new_width = int(width * scale)
-                new_height = int(height * scale)
-                scaled_frame = cv2.resize(frame, (new_width, new_height))
+        try:
+            # Use faster inference settings and filter for vehicle classes only (car, truck, bus, motorcycle)
+            # Classes 2 (car), 3 (motorcycle), 5 (bus), 7 (truck) only
+            vehicle_classes_filter = [2, 3, 5, 7]  # Only vehicle classes for faster detection
             
-            # Detect vehicles
-            try:
-                vehicle_results = self.vehicle_model(scaled_frame, conf=self.vehicle_conf)[0]
-                
-                # Filter for vehicle classes
-                for box in vehicle_results.boxes:
-                    cls = int(box.cls.item())
-                    if cls in self.vehicle_classes:
-                        x1, y1, x2, y2 = box.xyxy.cpu().numpy()[0]
-                        
-                        # Adjust coordinates back to original scale if needed
-                        if scale != 1.0:
-                            x1 = int(x1 / scale)
-                            y1 = int(y1 / scale)
-                            x2 = int(x2 / scale)
-                            y2 = int(y2 / scale)
-                        
-                        confidence = box.conf.item()
-                        vehicle_detections.append({
-                            'box': [x1, y1, x2, y2],
-                            'confidence': confidence,
-                            'class': self.vehicle_classes[cls]
-                        })
-            except Exception as e:
-                # Skip this scale if an error occurs
-                continue
+            # Run YOLOv8 with class filtering to only detect vehicles, not other objects
+            vehicle_results = self.vehicle_model(
+                frame, 
+                conf=self.vehicle_conf, 
+                iou=0.5, 
+                classes=vehicle_classes_filter  # Only detect vehicle classes
+            )[0]
+            
+            # Process vehicle detections
+            for box in vehicle_results.boxes:
+                cls = int(box.cls.item())
+                # Skip filters here since we already filtered in the YOLO call
+                if cls in self.vehicle_classes:
+                    x1, y1, x2, y2 = box.xyxy.cpu().numpy()[0]
+                    confidence = box.conf.item()
+                    vehicle_detections.append({
+                        'box': [x1, y1, x2, y2],
+                        'confidence': confidence,
+                        'class': self.vehicle_classes[cls]
+                    })
+        except Exception as e:
+            # Log error and return empty lists
+            print(f"Error detecting vehicles: {e}")
+            return [], []
         
-        # Detect license plates - two approaches
+        # Fast approach for license plate detection - only process if vehicles detected
         plate_detections = []
         
-        # Approach 1: Use specialized license plate detector
-        try:
-            plate_results = self.license_plate_model(frame, conf=self.plate_conf)[0]
-        except Exception as e:
-            print(f"Error using license plate model: {e}")
-            # Fallback to vehicle model
-            plate_results = self.vehicle_model(frame, conf=self.plate_conf)[0]
-        
-        # Approach 2: Use direct scanning of vehicle regions
+        # Skip license plate detection if no vehicles detected
+        if not vehicle_detections:
+            return vehicle_detections, plate_detections
+            
+        # Approach 1: Use specialized license plate detector only on regions with vehicles
+        # This is much faster than scanning the whole frame
         for vehicle in vehicle_detections:
-            v_x1, v_y1, v_x2, v_y2 = vehicle['box']
+            v_x1, v_y1, v_x2, v_y2 = map(int, vehicle['box'])
             
-            # Extract the vehicle region
-            vehicle_region = frame[int(v_y1):int(v_y2), int(v_x1):int(v_x2)]
+            # Extract the vehicle region with padding
+            padding = 20  # Add some padding around vehicle
+            y_start = max(0, v_y1 - padding)
+            y_end = min(frame.shape[0], v_y2 + padding)
+            x_start = max(0, v_x1 - padding)
+            x_end = min(frame.shape[1], v_x2 + padding)
             
-            # Only process if the region is valid
-            if vehicle_region.size > 0:
-                # Look for license plate regions in the vehicle area
-                # 1. Use standard model detection
+            vehicle_region = frame[y_start:y_end, x_start:x_end]
+            
+            # Only process if the region is valid and big enough
+            if vehicle_region.size > 1000:  # Skip tiny regions
+                # Use specialized license plate model on the vehicle region
                 try:
-                    vehicle_results = self.vehicle_model(vehicle_region, conf=self.plate_conf)[0]
+                    plate_results = self.license_plate_model(vehicle_region, conf=self.plate_conf)[0]
                     
-                    # Process each detected box within the vehicle
-                    for box in vehicle_results.boxes:
-                        # Convert coordinates to the full frame
+                    # Process each detected plate
+                    for box in plate_results.boxes:
+                        # Get coordinates relative to vehicle region
                         rx1, ry1, rx2, ry2 = box.xyxy.cpu().numpy()[0]
-                        # Adjust coordinates to the original frame
-                        x1, y1 = rx1 + v_x1, ry1 + v_y1
-                        x2, y2 = rx2 + v_x1, ry2 + v_y1
+                        
+                        # Convert back to full frame coordinates
+                        x1, y1 = rx1 + x_start, ry1 + y_start
+                        x2, y2 = rx2 + x_start, ry2 + y_start
                         confidence = box.conf.item()
                         
                         # Process this region as a potential plate
                         self._process_potential_plate_region(frame, x1, y1, x2, y2, confidence, plate_detections)
                 except Exception as e:
-                    # Just continue if there's an error with this region
+                    # Continue to the fallback approach if this fails
                     pass
                 
-                # 2. Use manual scanning for potential plate regions
-                height, width = vehicle_region.shape[:2]
-                # Typical locations for license plates (bottom center, middle, etc.)
-                regions_to_check = [
-                    # Bottom center
-                    (width//4, height*2//3, width*3//4, height),
-                    # Middle center
-                    (width//4, height//3, width*3//4, height*2//3),
-                    # Full region (small vehicles)
-                    (0, 0, width, height)
-                ]
+                # Fallback: Focus on the area where license plates typically appear
+                # For cars: Front/back center, for trucks/buses: front center or sides
+                # We'll create 1-2 regions of interest based on vehicle class
+                vehicle_class = vehicle['class']
+                regions = []
                 
-                for rx1, ry1, rx2, ry2 in regions_to_check:
+                height, width = vehicle_region.shape[:2]
+                
+                if vehicle_class in ['car', 'motorcycle']:
+                    # For cars - check front/back center regions
+                    # Front license plate region (bottom center)
+                    regions.append((
+                        width//4, height*2//3,  # Top-left
+                        width*3//4, height      # Bottom-right
+                    ))
+                    
+                elif vehicle_class in ['bus', 'truck']:
+                    # For larger vehicles - check multiple regions
+                    # Front plate (bottom center)
+                    regions.append((
+                        width//4, height*2//3,
+                        width*3//4, height
+                    ))
+                    # Side plate (middle center)
+                    regions.append((
+                        width//3, height//3,
+                        width*2//3, height*2//3
+                    ))
+                
+                # Process each region
+                for rx1, ry1, rx2, ry2 in regions:
                     # Convert to full frame coordinates
-                    x1, y1 = rx1 + v_x1, ry1 + v_y1
-                    x2, y2 = rx2 + v_x1, ry2 + v_y1
+                    x1, y1 = rx1 + x_start, ry1 + y_start
+                    x2, y2 = rx2 + x_start, ry2 + y_start
+                    
                     # Process this region as a potential plate
                     self._process_potential_plate_region(frame, x1, y1, x2, y2, 0.5, plate_detections)
-        
-        # Process results from general object detection
-        for box in plate_results.boxes:
-            x1, y1, x2, y2 = box.xyxy.cpu().numpy()[0]
-            confidence = box.conf.item()
-            
-            # Process this region as a potential plate
-            self._process_potential_plate_region(frame, x1, y1, x2, y2, confidence, plate_detections)
         
         # Associate plates with vehicles
         self._associate_plates_with_vehicles(vehicle_detections, plate_detections)
@@ -286,81 +294,64 @@ class VehicleDetector:
         ]
     
     def _process_potential_plate_region(self, frame, x1, y1, x2, y2, confidence, plate_detections):
-        """Process a region as a potential license plate"""
-        # Convert to int coordinates
-        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-        
-        # Ensure coordinates are within frame bounds
+        """Process a region as a potential license plate - optimized for speed"""
+        # Convert to int coordinates and ensure within frame bounds
         height, width = frame.shape[:2]
-        x1 = max(0, x1)
-        y1 = max(0, y1)
-        x2 = min(width, x2)
-        y2 = min(height, y2)
+        x1, y1, x2, y2 = max(0, int(x1)), max(0, int(y1)), min(width, int(x2)), min(height, int(y2))
         
         # Calculate width and height
         region_width = x2 - x1
         region_height = y2 - y1
         
-        # Skip if region is too small
-        if region_width < 10 or region_height < 10:
+        # Skip if region is too small or dimensions make no sense
+        if region_width < 20 or region_height < 10 or x1 >= x2 or y1 >= y2:
             return
             
-        # Calculate aspect ratio
+        # Quick aspect ratio check (license plates are typically rectangular)
         aspect_ratio = region_width / region_height if region_height > 0 else 0
+        if not (1.5 < aspect_ratio < 5.0):  # More strict criteria for better performance
+            return
         
-        # License plates typically have an aspect ratio between 1:1 and 7:1
-        # More relaxed criteria for testing
-        if 0.5 < aspect_ratio < 10.0 and region_width < 0.8 * width and region_height < 0.5 * height:
-            # Extract the potential license plate image
-            plate_img = frame[y1:y2, x1:x2]
+        # Extract the potential license plate image
+        plate_img = frame[y1:y2, x1:x2]
+        if plate_img.size == 0:
+            return
+        
+        # Fast resize if needed - always resize to a standard size for faster processing
+        standard_width = 200
+        try:
+            plate_img = cv2.resize(plate_img, (standard_width, int(standard_width / aspect_ratio)), 
+                              interpolation=cv2.INTER_AREA)  # INTER_AREA is faster and good for downsampling
+        except Exception:
+            return
+        
+        try:
+            # Recognize the license plate text
+            plate_text, text_confidence = recognize_license_plate(plate_img)
             
-            # Skip if image is invalid
-            if plate_img.size == 0:
+            # Skip if text recognition failed or confidence is too low
+            if not plate_text or text_confidence < 0.15:
                 return
             
-            # Apply image enhancement for better OCR
-            # Resize if too small
-            min_width = 150  # Minimum width for good OCR
-            if region_width < min_width:
-                scale = min_width / region_width
-                new_width = int(region_width * scale)
-                new_height = int(region_height * scale)
-                try:
-                    plate_img = cv2.resize(plate_img, (new_width, new_height), interpolation=cv2.INTER_CUBIC)
-                except Exception:
-                    # Skip if resize fails
-                    return
-            
-            try:
-                # Recognize the license plate text
-                plate_text, text_confidence = recognize_license_plate(plate_img)
+            # Quick validation
+            if is_valid_license_plate(plate_text):
+                # Simple duplicate check
+                for plate in plate_detections:
+                    if plate['text'] == plate_text:
+                        # Update if confidence is higher
+                        if text_confidence > plate['text_confidence']:
+                            plate['box'] = [x1, y1, x2, y2]
+                            plate['confidence'] = confidence
+                            plate['text_confidence'] = text_confidence
+                        return  # Exit early
                 
-                # Skip if text recognition failed
-                if plate_text is None:
-                    return
-                
-                # Check if it's a valid license plate
-                if is_valid_license_plate(plate_text) and text_confidence > 0.1:
-                    # Check if this plate has already been detected (to avoid duplicates)
-                    is_duplicate = False
-                    for existing_plate in plate_detections:
-                        if existing_plate['text'] == plate_text:
-                            # If this detection has higher confidence, update the existing one
-                            if text_confidence > existing_plate['text_confidence']:
-                                existing_plate['box'] = [x1, y1, x2, y2]
-                                existing_plate['confidence'] = confidence
-                                existing_plate['text_confidence'] = text_confidence
-                            is_duplicate = True
-                            break
-                    
-                    # Add new detection if not a duplicate
-                    if not is_duplicate:
-                        plate_detections.append({
-                            'box': [x1, y1, x2, y2],
-                            'confidence': confidence,
-                            'text': plate_text,
-                            'text_confidence': text_confidence
-                        })
-            except Exception as e:
-                # Just continue if there's an error
-                pass 
+                # Add new detection
+                plate_detections.append({
+                    'box': [x1, y1, x2, y2],
+                    'confidence': confidence,
+                    'text': plate_text,
+                    'text_confidence': text_confidence
+                })
+        except Exception:
+            # Just continue if there's an error
+            pass 
